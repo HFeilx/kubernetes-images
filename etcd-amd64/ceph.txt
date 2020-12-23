@@ -1,0 +1,244 @@
+概述：
+1. 查看local-volume-provisioner、k8s local volume源码，了解本地存储实现
+2. 实现nfs-driver存储，nfs-server集群内和集群外部署均支持
+
+项目进展：
+1.完成nfs-driver存储
+
+
+产品技术：
+1.local-volume-provisioner
+  Discovery：监控读取本地配置目录，查找pv的挂点端点，创建pv
+  Deleter： 发现pv状态发生变化，释放pv资源
+  Cache：  PV informer供Discovery和Deleter实例获取现有的pv
+  Controller：控制整个pv生命周期
+
+
+个人思考:
+
+
+echo "192.168.56.5 ceph50 " >> /etc/hosts
+echo "192.168.56.6 ceph51 " >> /etc/hosts
+
+
+systemctl stop firewalld
+systemctl disable firewalld
+
+sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+setenforce 0
+
+useradd ceph
+echo "ceph:1234" | chpasswd
+echo "ceph ALL = (root) NOPASSWD:ALL " | tee /etc/sudoers.d/ceph
+chmod 0440 /etc/sudoers.d/ceph
+
+#配置sudo 不需要tty
+sed -i 's/Default requiretty/#Default requiretty/' /etc/sudoers
+
+
+
+
+
+sudo echo '#阿里ceph源
+[ceph]
+name=ceph
+baseurl=http://mirrors.aliyun.com/ceph/rpm-nautilus/el7/x86_64/
+gpgcheck=0
+[ceph-noarch]
+name=cephnoarch
+baseurl=http://mirrors.aliyun.com/ceph/rpm-nautilus/el7/noarch/
+gpgcheck=0
+[ceph-source]
+name=ceph-source
+baseurl=http://mirrors.aliyun.com/ceph/rpm-nautilus/el7/SRPMS/
+gpgcheck=0
+#'>/etc/yum.repos.d/ceph.repo
+
+
+yum -y install ntpdate
+ntpdate -u  cn.ntp.org.cn
+
+crontab -e
+*/20 * * * * ntpdate -u  cn.ntp.org.cn > /dev/null 2>&1
+
+systemctl reload crond.service
+
+
+#！/usr/bin/python2.7
+
+
+(http://www.voidcn.com/article/p-arqkzkmu-brx.html)
+(https://blog.csdn.net/u011418530/article/details/79986251)
+1.yum -y install epel-release
+3.yum install python-pip
+3.ceph-deploy new --cluster-network 192.168.56.1/24 --public-network 192.168.56.1/24 ceph50 ceph51 ceph52
+
+
+
+健康检查不通过
+https://www.bbsmax.com/A/n2d9OBYgJD/（health_warn）
+
+
+文档
+
+***  https://www.wsfnk.com/archives/1163.html
+**  https://blog.51cto.com/leejia/2499684
+
+
+
+ceph clinet安装在kubernetes集群中
+https://www.cnblogs.com/xzkzzz/p/9848930.html
+
+ceph-deploy disk zap ceph50 /dev/sdb
+ceph-deploy disk zap ceph51 /dev/sdb
+ceph-deploy disk zap ceph52 /dev/sdb 
+
+
+
+
+
+
+ceph-deploy osd create ceph52 --data /dev/sdb
+ceph-deploy osd create ceph51 --data /dev/sdb
+ceph-deploy osd create ceph51 --data /dev/sdc
+ceph-deploy osd create ceph51 --data /dev/sdd
+ceph-deploy osd create ceph52 --data /dev/sdb
+ceph-deploy osd create ceph52 --data /dev/sdc
+ceph-deploy osd create ceph52 --data /dev/sdd
+
+
+
+
+
+
+rados  crush
+
+systemctl restart ceph-mon.target
+
+
+
+192.168.56.5 ceph50 
+192.168.56.6 ceph51 
+192.168.56.7 ceph52
+
+
+
+
+
+scp -r root@192.168.56.5:/etc/ceph/\{ceph.conf,ceph.client.admin.keyring\} /etc/ceph/
+
+
+grep key /etc/ceph/ceph.client.admin.keyring |awk '{printf "%s", $NF}'|base64
+
+
+
+---------------------------base64-----------------------------------
+QVFDQUxkaGZZMWtXSGhBQUhVakUvakprTDZzZzhha1pVb0NyR3c9PQ==
+
+
+
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+   name: ceph-rbd
+provisioner: ceph.com/rbd
+parameters:
+  monitors: 192.168.56.5:6789,192.168.56.6:6789,192.168.56.7:6789
+  adminId: admin
+  adminSecretName: ceph-secret
+  adminSecretNamespace: default
+  pool: kube
+  userId: kube
+  userSecretName: ceph-user-secret
+  fsType: ext4
+  imageFormat: "2"
+  imageFeatures: "layering"
+
+
+
+
+
+
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: myapp
+spec:
+  serviceName: myapp-sts-svc
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp-pod
+  template:
+    metadata:
+      labels:
+        app: myapp-pod
+    spec:
+      containers:
+      - name: myapp
+        image: ikubernetes/myapp:v1
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: myappdata
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: myappdata
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "ceph-rbd"
+      resources:
+        requests:
+          storage: 1Gi
+
+
+
+export CEPH_ADMIN_SECRET='AQCALdhfY1kWHhAAHUjE/jJkL6sg8akZUoCrGw=='
+
+
+kubectl create secret generic ceph-secret --type="kubernetes.io/rbd" \
+--from-literal=key=$CEPH_ADMIN_SECRET \
+--namespace=default
+
+
+
+export CEPH_KUBE_SECRET='AQB8mthfV+GZOxAAWWqNvXgBJcm/zmtgWL5JJg=='
+kubectl create secret generic ceph-user-secret --type="kubernetes.io/rbd" \
+--from-literal=key=$CEPH_KUBE_SECRET \
+--namespace=default
+
+
+
+
+
+cat >ceph-rdb-pvc-test.yaml<<EOF
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: ceph-rdb-claim
+spec:
+  accessModes:     
+    - ReadWriteOnce
+  storageClassName: ceph-rbd
+  resources:
+    requests:
+      storage: 1Gi
+EOF
+
+
+
+
+
+
+
+
+
+
+
+
+
+
